@@ -5,20 +5,19 @@
 VarFold folds every clinically classified missense variant in a protein domain with
 [ESMFold](https://github.com/facebookresearch/esm), measures where the model loses
 confidence relative to the wild type, and tests whether those "structural breaking
-points" track pathogenicity. It has two halves:
+points" track pathogenicity.
 
-| Tier | Where | What it does |
-|---|---|---|
-| **Research engine** (`engine/`, Python package `varfold`) | Local GPU workstation | Curates the dataset, batch-folds hundreds of sequences overnight, computes metrics/statistics/figures for the paper, exports a web bundle, and serves live folds over Tailscale |
-| **Showcase app** (`web/`) | Hetzner server (Docker + Caddy) | Public site and JSON API over the precomputed dataset, with a 3Dmol.js viewer; forwards occasional live-fold requests to the workstation |
+This branch (`active`) is the research copy used for the paper: everything runs on your
+own machine, and nothing here deploys to a server. The public website is the **`demo`**
+branch (local copy: `~/Desktop/VarFold/varfold-demo`, live at <https://varfold.devtga.com>),
+which only serves a bundle exported from here. The two share history, so a fix made on one
+can be moved to the other with `git cherry-pick`.
 
 ```
- ┌──────────────── research PC (GPU) ────────────────┐          ┌──────────── Hetzner ────────────┐
- │ varfold curate ─► fold ─► llr ─► validate ─►      │  rsync   │  Caddy (HTTPS, CSP)             │
- │ analyze ─► export ──► varfold.sqlite ─────────────┼─────────►│   └─► FastAPI + React (3Dmol)   │
- │                                                    │          │        ├─ /api/* (read-only)   │
- │ varfold serve  (ESMFold on GPU, bearer token) ◄────┼─ Tailscale ────────┘ /api/live/fold       │
- └────────────────────────────────────────────────────┘          └─────────────────────────────────┘
+ ┌──────────── this branch: research PC (GPU) ────────────┐         ┌──── demo branch: devtga.com ────┐
+ │ varfold curate ─► fold ─► llr ─► validate ─► analyze ─► │ publish │  FastAPI + React (3Dmol)        │
+ │ export ──► data/ar_lbd/web/varfold.sqlite ──────────────┼────────►│  read-only, no PyTorch, no GPU  │
+ └─────────────────────────────────────────────────────────┘         └─────────────────────────────────┘
 ```
 
 ![Overview page](docs/overview.png)
@@ -28,8 +27,8 @@ points" track pathogenicity. It has two halves:
 You need Python 3.10+ (3.12 recommended), Node 20+, `git` and `make`.
 
 ```bash
-git clone https://github.com/gokalpalkoc-lang/varfold.git
-cd varfold
+git clone -b active https://github.com/gokalpalkoc-lang/Research-Paper-Varfold.git varfold-active
+cd varfold-active
 ```
 
 **1. Just look at it (2 minutes, no GPU, no model download).** Uses the bundled demo
@@ -54,7 +53,7 @@ make live                  # open http://127.0.0.1:8000 → Live fold
 computes the statistics and figures, and serves your own results.
 
 ```bash
-.venv/bin/varfold all      # resumable; ~406 structures (hours on a GPU, ~1 day on a CPU)
+.venv/bin/varfold all      # resumable; ~442 structures (hours on a GPU, ~1 day on a CPU)
 make live                  # the site now shows your data instead of the demo
 ```
 
@@ -67,8 +66,11 @@ Default target: **androgen receptor ligand-binding domain** (AR, UniProt P10275,
 residues 669–919). It has by far the most labelled missense variants of the
 hormone receptors checked (androgen insensitivity syndrome), crystal structures to
 validate against, and fits ESMFold on an 8 GB GPU. The curated dataset is
-**405 variants (305 pathogenic/likely pathogenic, 21 benign/likely benign, 79 VUS)
-plus the wild type**. Any other target is one YAML file away (see below).
+**441 variants plus the wild type**: 294 pathogenic/likely pathogenic, 21 benign/likely
+benign, 79 VUS, 11 pathogenic only in a cancer context (prostate-cancer resistance
+mutations, kept apart as a negative control) and 36 clinically unclassified variants
+carried by hemizygous men in gnomAD v4 (extra negatives for a secondary analysis).
+Any other target is one YAML file away (see below).
 
 ---
 
@@ -110,10 +112,11 @@ Every step is resumable and writes into `data/<target>/`.
 
 ```bash
 source .venv/bin/activate
-varfold curate      # UniProt + EBI Proteins API → dataset.csv (raw API snapshots kept with SHA-256)
+varfold curate      # UniProt + EBI Proteins API + gnomAD → dataset.csv (raw API snapshots kept with SHA-256)
 varfold fold        # batch ESMFold; Ctrl-C/kill any time, re-run to resume
 varfold status      # progress + time-remaining estimate
 varfold llr         # ESM-2 masked-marginal baseline scores
+                    # AlphaMissense baseline: save its scores by hand once (see below)
 varfold validate    # WT prediction vs PDB 2AM9 (SIFTS residue mapping)
 varfold analyze     # metrics, statistics, figures, report.md
 varfold export      # web bundle: data/ar_lbd/web/varfold.sqlite
@@ -131,7 +134,7 @@ journalctl --user -fu varfold-batch          # or: tail -f data/ar_lbd/varfold.l
 **Runtime.**
 
 - **Measured on CPU** (Core Ultra 9 185H, fp32, 4 recycles): **~4 min** per
-  251-residue structure, so about 27 h for the 406-structure clinical set. That's fine
+  251-residue structure, so about 26 h for the 442-structure set. That's fine
   for testing; production runs need the GPU.
 - **CPU threads:** this hybrid CPU is fastest with `VARFOLD_THREADS=6` (one per P-core).
   Using all 22 logical CPUs is about 2× slower than PyTorch's default.
@@ -160,7 +163,7 @@ journalctl --user -fu varfold-batch          # or: tail -f data/ar_lbd/varfold.l
 
 | File | Contents |
 |---|---|
-| `dataset.csv`, `dataset.meta.json` | The curated variant set, labels, ClinVar/dbSNP ids, provenance |
+| `dataset.csv`, `dataset.meta.json` | The curated variant set, labels, ClinVar/dbSNP ids, gnomAD carrier counts, provenance |
 | `structures/<fp>/*.pdb`, `pae/<fp>/*.npz` | Every predicted structure (B-factor = pLDDT) and its PAE matrix, per settings fingerprint |
 | `predictions.jsonl` | Per-residue pLDDT, pTM, runtime, device, versions per structure |
 | `analysis/metrics.csv` | Per-variant ΔpLDDT (local/site/global), Cα RMSD, lDDT-Cα, LLR, breaking-point q-values |
@@ -189,6 +192,20 @@ journalctl --user -fu varfold-batch          # or: tail -f data/ar_lbd/varfold.l
   same variants: a DeLong 95% CI, with the p-value from a paired permutation test.
   DeLong's own p is liberal with only 21 benign variants (7–8% type-I error at nominal
   5% in simulation; the permutation test stays near 5%).
+- **AlphaMissense** (the published state-of-the-art predictor) is the strongest baseline.
+  It is not downloaded automatically: open the `amAnnotationsUrl` listed at
+  <https://alphafold.ebi.ac.uk/api/prediction/P10275> in a browser and save the file as
+  `data/ar_lbd/raw/AF-P10275-F1-aa-substitutions.csv`. Until it is there, analysis skips
+  that baseline with a warning; once it is, its SHA-256 goes into `stats.json`.
+- **Label classes beyond P/B/VUS.** A pathogenic variant whose diseases are all cancers
+  becomes `cancer`: for AR these are prostate-cancer resistance mutations (T878A, L702H,
+  H875Y…), gain-of-function changes that keep the receptor folded. They test the method
+  as a *negative control*: germline pathogenic variants should be breaking points more
+  often than they are (one-sided Fisher). A clinically unclassified variant carried by at
+  least one hemizygous XY person in gnomAD v4 becomes `population` (config `population:`).
+  Benign + population is a larger, noisier negative set for a secondary analysis; a
+  clinical label always wins, because mild androgen insensitivity is compatible with a
+  male phenotype and 13 ClinVar-pathogenic LBD variants do have hemizygous carriers.
 - **Enrichment:** whether pathogenic variants become breaking points more often than
   benign ones is a variant-level one-sided Fisher test. A residue-level version would be
   confounded by how many variants each residue carries.
@@ -229,48 +246,19 @@ per-residue charts, ClinVar links, PDB download), **Live fold**, and **Methods**
 (generated from the dataset's own provenance). The JSON API is documented at
 `/api/docs`.
 
-### Deploying to Hetzner
+### Publishing to the demo site
 
-On the server (Docker + Compose installed, DNS A/AAAA record pointing at it):
-
-```bash
-git clone <this repo> /opt/varfold && cd /opt/varfold/deploy
-cp .env.example .env && nano .env          # DOMAIN, worker URL + token
-mkdir -p data
-docker compose up -d --build                # Caddy obtains the TLS certificate
-```
-
-From the research PC, publish (and later re-publish) the dataset:
+The public site is the `demo` branch; it never folds anything and reads only the bundle
+exported here. After `varfold export`:
 
 ```bash
-VARFOLD_SERVER=deploy@your-server ./deploy/publish.sh
+cd ../varfold-demo
+./scripts/publish.sh ../varfold-active/data/ar_lbd/web/varfold.sqlite
 ```
 
-The site runs entirely from the bundle. Live folding is optional: leave
-`VARFOLD_WORKER_URL` empty and the Live page reports it as disabled. Exact dataset
-sequences are always answered instantly from the bundle, without touching the GPU.
-
-### Live folding over Tailscale
-
-1. Install Tailscale on both machines (`curl -fsSL https://tailscale.com/install.sh | sh && sudo tailscale up`).
-2. Restrict the tailnet so only the server can reach the worker port. Tag the
-   machines in the admin console and add an ACL such as:
-   ```json
-   {
-     "tagOwners": { "tag:web": ["autogroup:admin"], "tag:gpu": ["autogroup:admin"] },
-     "acls": [ { "action": "accept", "src": ["tag:web"], "dst": ["tag:gpu:8100"] } ]
-   }
-   ```
-3. On the research PC, install the worker as a user service (instructions in
-   `deploy/varfold-worker.service`). It binds **only** to the Tailscale IP and requires
-   the bearer token from `~/.config/varfold/worker.env`.
-4. Put the PC's Tailscale IP and the same token into the server's `.env`
-   (`VARFOLD_WORKER_URL=http://100.x.y.z:8100`).
-
-Defence in depth: the tailnet ACL, Tailscale-only binding, constant-time token check,
-one GPU job at a time with a bounded queue (503 + `Retry-After` when full), server-side
-sequence validation and length cap, per-IP hourly limit (429), a request timeout, and a
-strict CSP at Caddy.
+Live folding is off on the public site. The worker (`varfold serve`,
+[deploy/varfold-worker.service](deploy/varfold-worker.service)) stays here because it needs
+the GPU; `make live` uses it to fold on this machine only.
 
 ---
 
@@ -283,7 +271,7 @@ engine/tests/       unit + end-to-end tests (synthetic run with planted signal; 
 web/backend/app/    FastAPI: read-only dataset API, live-fold proxy, SPA hosting
 web/backend/tests/  API tests against a bundle built by the real exporter
 web/frontend/       React + TypeScript + Vite; 3Dmol.js viewer, SVG charts
-deploy/             docker-compose, Caddyfile, worker systemd unit, publish script
+deploy/             systemd unit for the live-fold worker (server files are on the demo branch)
 data/<target>/      generated (git-ignored)
 ```
 

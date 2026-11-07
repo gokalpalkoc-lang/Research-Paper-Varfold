@@ -27,13 +27,15 @@ VARIANT_COLUMNS = {
     "max_gnomad_af": "REAL", "mean_plddt": "REAL", "ptm": "REAL", "delta_mean_plddt": "REAL",
     "delta_ptm": "REAL", "site_plddt": "REAL", "delta_site_plddt": "REAL", "delta_local_plddt": "REAL",
     "min_delta_plddt": "REAL", "min_delta_position": "INTEGER", "n_residues_drop5": "INTEGER",
-    "rmsd_ca": "REAL", "lddt_ca": "REAL", "lddt_local": "REAL", "llr": "REAL", "blosum62": "INTEGER", "wt_site_plddt": "REAL",
+    "rmsd_ca": "REAL", "lddt_ca": "REAL", "lddt_local": "REAL", "llr": "REAL", "alphamissense": "REAL",
+    "blosum62": "INTEGER", "wt_site_plddt": "REAL", "gnomad_carriers": "INTEGER",
     "wt_site_burial": "INTEGER", "local_p": "REAL", "local_q": "REAL", "breaking_point": "INTEGER",
     "sequence": "TEXT NOT NULL", "plddt": "TEXT NOT NULL", "pdb_gz": "BLOB NOT NULL",
 }
 POSITION_COLUMNS = {
     "position": "INTEGER PRIMARY KEY", "wt": "TEXT", "wt_plddt": "REAL", "wt_burial": "INTEGER",
     "n_variants": "INTEGER", "n_pathogenic": "INTEGER", "n_benign": "INTEGER", "n_vus": "INTEGER",
+    "n_cancer": "INTEGER", "n_population": "INTEGER",
     "mean_delta_local_plddt": "REAL", "min_delta_local_plddt": "REAL", "max_rmsd_ca": "REAL",
     "mean_llr": "REAL", "n_breaking_points": "INTEGER",
 }
@@ -113,7 +115,9 @@ def export_web_db(cfg: TargetConfig) -> str:
 
         summary = {k: stats[k] for k in ("dataset", "wild_type", "noise_floor", "breaking_points",
                                          "discrimination", "discrimination_high_confidence_labels",
-                                         "versus_llr", "versus_blosum62", "versus_wt_site_plddt", "correlations", "generated_at")}
+                                         "versus_llr", "versus_alphamissense", "versus_blosum62", "versus_wt_site_plddt",
+                                         "discrimination_tolerated", "correlations", "generated_at")
+                   if k in stats}
         wt_rec = preds["WT"]
         meta_rows = {
             "schema_version": SCHEMA_VERSION,

@@ -21,8 +21,13 @@ reference_structure:
   chain: A
 
 variants:
-  # Clinical classes to fold. Unlabelled variants are only used by the scan.
-  include_classes: [pathogenic, benign, vus, conflicting]
+  # Classes to fold. Unlabelled variants are only used by the scan.
+  #   cancer      pathogenic only for cancers (AR's prostate-cancer resistance
+  #               mutations, mostly gain-of-function): analysed apart from the
+  #               germline pathogenic class, as a negative control
+  #   population  clinically unclassified, but carried by people in gnomAD
+  #               (see population: below): extra negatives for a secondary analysis
+  include_classes: [pathogenic, benign, vus, conflicting, cancer, population]
   # ClinVar-style review stars; 0 keeps everything (incl. UniProt-curated
   # literature variants that carry no ClinVar review status).
   min_review_stars: 0
@@ -32,6 +37,16 @@ variants:
   #   saturation  all 19 substitutions at every residue (~4,770 structures;
   #               GPU overnight job, not practical on CPU)
   scan: none
+
+# Population-tolerated negatives. AR is X-linked, so a carrier is a hemizygous XY
+# person: a variant that makes the receptor fail completely would not be seen in
+# them. Mild (partial) androgen insensitivity is compatible with a male phenotype,
+# though, and 15 ClinVar-pathogenic LBD variants do appear in hemizygous carriers;
+# clinical labels therefore always win over this rule.
+population:
+  dataset: gnomad_r4
+  count: ac_hemi
+  min_carriers: 1
 
 folding:
   model: facebook/esmfold_v1

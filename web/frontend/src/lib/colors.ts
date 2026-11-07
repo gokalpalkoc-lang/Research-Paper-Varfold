@@ -18,6 +18,8 @@ export const LABEL_NAMES: Record<Label, string> = {
   benign: "Benign / LB",
   vus: "VUS",
   conflicting: "Conflicting",
+  cancer: "Cancer context",
+  population: "gnomAD carriers",
   unlabeled: "Unlabelled",
 };
 

@@ -129,7 +129,7 @@ class ESMFoldPredictor:
             self.precision = "fp32"
         self.chunk_size = options.chunk_size
         self._torch = torch
-        t0 = time.time()
+        t0 = time.perf_counter()
         self.tokenizer = AutoTokenizer.from_pretrained(options.model)
         model = load_pretrained(EsmForProteinFolding, options.model)
         model.eval()
@@ -141,7 +141,7 @@ class ESMFoldPredictor:
         else:
             configure_cpu_threads()
         self._set_chunk(self.chunk_size)
-        log.info("ESMFold loaded on %s (%s) in %.0fs", self.device_name, self.precision, time.time() - t0)
+        log.info("ESMFold loaded on %s (%s) in %.0fs", self.device_name, self.precision, time.perf_counter() - t0)
 
     @property
     def device_name(self) -> str:
@@ -169,7 +169,7 @@ class ESMFoldPredictor:
 
     def predict(self, sequence: str) -> Prediction:
         torch = self._torch
-        t0 = time.time()
+        t0 = time.perf_counter()
         while True:
             try:
                 out = self._forward(sequence)
@@ -182,7 +182,7 @@ class ESMFoldPredictor:
                 log.warning("CUDA OOM at chunk_size=%s for L=%d; retrying with %d",
                             self.chunk_size, len(sequence), current // 2)
                 self._set_chunk(current // 2)
-        runtime = time.time() - t0
+        runtime = time.perf_counter() - t0
 
         plddt_atoms = out["plddt"][0].float().cpu().numpy()            # (L, 37)
         atom_mask = out["atom37_atom_exists"][0].float().cpu().numpy()  # (L, 37)
@@ -308,7 +308,7 @@ def run_batch(cfg: TargetConfig, ids: list[str] | None = None, limit: int | None
     previous = signal.signal(signal.SIGTERM, _graceful)
     n_ok = n_fail = 0
     interrupted = False
-    t_start = time.time()
+    t_start = time.perf_counter()
     try:
         for i, row in enumerate(todo, 1):
             if stop["flag"]:
@@ -354,7 +354,7 @@ def run_batch(cfg: TargetConfig, ids: list[str] | None = None, limit: int | None
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             })
             n_ok += 1
-            elapsed = time.time() - t_start
+            elapsed = time.perf_counter() - t_start
             eta = elapsed / i * (len(todo) - i)
             log.info("[%d/%d] %-8s pLDDT %5.1f  pTM %.3f  %5.1fs  (ETA %s)", i, len(todo), row.variant_id,
                      pred.mean_plddt, pred.ptm, pred.runtime_s, _fmt_duration(eta))

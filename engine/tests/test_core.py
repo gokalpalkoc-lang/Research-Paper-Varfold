@@ -101,6 +101,121 @@ def test_scan_mutations():
     assert scan_mutations("AC", 10, "none") == []
 
 
+def _diseases(*names):
+    return [{"name": n, "disease": True} for n in names]
+
+
+def test_cancer_only_pathogenic_is_its_own_class():
+    features = [
+        _feat(2, "K", "E", "Pathogenic", association=_diseases("Prostate cancer, somatic", "Neoplasm")),
+        _feat(3, "T", "A", "Pathogenic", association=_diseases("Androgen insensitivity syndrome (AIS)",
+                                                                "Prostate cancer")),
+        _feat(4, "A", "G", "Pathogenic"),                                  # no disease named: stays pathogenic
+        _feat(5, "Y", "H", "Benign", association=_diseases("Prostate cancer")),  # only pathogenic labels move
+    ]
+    by_id = {v["variant_id"]: v for v in aggregate_variants(features, "MKTAYIAK")[0]}
+    assert {k: v["label"] for k, v in by_id.items()} == {
+        "K2E": "cancer", "T3A": "pathogenic", "A4G": "pathogenic", "Y5H": "benign"}
+    assert by_id["K2E"]["review_stars"] == 1  # the stars behind its pathogenic assertion are kept
+
+
+def _gnomad(*variants):
+    return {"data": {"gene": {"gene_id": "G1", "canonical_transcript_id": "ENST1", "variants": list(variants)}}}
+
+
+def _gv(hgvsp, exome=None, genome=None, transcript="ENST1", consequence="missense_variant"):
+    return {"variant_id": "X-1-A-G", "consequence": consequence, "hgvsp": hgvsp, "transcript_id": transcript,
+            "exome": exome, "genome": genome}
+
+
+def test_population_counts_canonical_transcript_only():
+    from varfold.curate import population_counts
+
+    payload = _gnomad(
+        _gv("p.Lys2Glu", exome={"ac_hemi": 3, "ac_hom": 0}, genome={"ac_hemi": 1, "ac_hom": 0}),
+        _gv("p.Lys2Glu", exome={"ac_hemi": 2, "ac_hom": 0}),        # another codon change, same substitution
+        _gv("p.Thr3Ala", genome={"ac_hemi": 0, "ac_hom": 1}),
+        _gv("p.Gln4Pro", exome={"ac_hemi": 9}),                     # reference mismatch (A at 4)
+        _gv("p.Lys2Arg", exome={"ac_hemi": 9}, transcript="ENST2"),  # other transcript, other numbering
+        _gv("p.Tyr5Ter", exome={"ac_hemi": 9}, consequence="stop_gained"),
+        _gv("p.?", exome={"ac_hemi": 1}),
+    )
+    carriers, dropped = population_counts(payload, "MKTAYIAK", "ac_hemi")
+    assert carriers == {"K2E": 6, "T3A": 0}
+    assert dropped == {"gnomad_reference_mismatch": 1, "gnomad_unparsed": 1}
+    assert population_counts(payload, "MKTAYIAK", "ac_hom")[0]["T3A"] == 1
+    with pytest.raises(RuntimeError, match="gnomAD query failed"):
+        population_counts({"errors": [{"message": "boom"}]}, "MKTAYIAK", "ac_hemi")
+
+
+def test_build_dataset_population_negatives(tmp_path, monkeypatch):
+    import pandas as pd
+
+    from varfold import curate
+    from varfold.config import Construct, TargetConfig
+
+    seq = "MKTAYIAKQR"
+    cfg = TargetConfig(name="toy", title="Toy", gene="TOY", uniprot="P00000", construct=Construct(2, 9),
+                       output_dir=str(tmp_path))
+    cfg.variants.include_classes = ["pathogenic", "benign", "vus", "conflicting", "cancer", "population"]
+    cfg.population.dataset = "gnomad_r4"
+    responses = {
+        curate.UNIPROT_URL.format(acc="P00000"): {"sequence": {"value": seq}},
+        curate.VARIATION_URL.format(acc="P00000"): {"sequence": seq, "features": [
+            _feat(2, "K", "E", "Pathogenic"),                       # pathogenic AND carried: stays pathogenic
+            _feat(3, "T", "A", "Pathogenic", association=_diseases("Prostate cancer")),
+            _feat(4, "A", "G"),                                     # unclassified and carried: population
+            _feat(6, "I", "V"),                                     # unclassified, no carriers: left out
+        ]},
+        curate.GNOMAD_URL: _gnomad(
+            _gv("p.Lys2Glu", exome={"ac_hemi": 5}), _gv("p.Ala4Gly", exome={"ac_hemi": 2}),
+            _gv("p.Tyr5His", genome={"ac_hemi": 1}),                # only in gnomAD: population
+            _gv("p.Met1Val", exome={"ac_hemi": 4}),                 # outside the construct
+        ),
+    }
+
+    def fake_fetch(url, dest, refresh=False, post=None):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(json.dumps(responses[url]))
+        return responses[url]
+
+    monkeypatch.setattr(curate, "fetch_json", fake_fetch)
+    df = curate.build_dataset(cfg).set_index("variant_id")
+    assert df["label"].to_dict() == {"WT": "wild_type", "K2E": "pathogenic", "T3A": "cancer",
+                                     "A4G": "population", "Y5H": "population"}
+    assert df.loc["K2E", "gnomad_carriers"] == 5 and df.loc["T3A", "gnomad_carriers"] == 0
+    assert pd.isna(df.loc["WT", "gnomad_carriers"])
+    meta = json.loads(cfg.paths.dataset_meta.read_text())
+    assert meta["sources"]["gnomad"]["dataset"] == "gnomad_r4"
+    assert meta["filters"]["population"]["min_carriers"] == 1
+
+    cfg.population.min_carriers = 2
+    assert "Y5H" not in curate.build_dataset(cfg)["variant_id"].tolist()
+    cfg.population.dataset = "none"
+    df = curate.build_dataset(cfg).set_index("variant_id")
+    assert "population" not in set(df["label"]) and df["gnomad_carriers"].isna().all()
+
+
+def test_alphamissense_loader_reads_both_formats(tmp_path):
+    from varfold.alphamissense import load_scores
+    from varfold.config import Construct, TargetConfig
+
+    cfg = TargetConfig(name="t", title="t", gene="T", uniprot="P00000", construct=Construct(1, 5),
+                       output_dir=str(tmp_path))
+    assert load_scores(cfg) == (None, None)
+    path = cfg.paths.alphamissense("P00000")
+    path.parent.mkdir(parents=True)
+    path.write_text("protein_variant,am_pathogenicity,am_class\nK2E,0.91,likely_pathogenic\nT3A,0.12,likely_benign\n")
+    scores, provenance = load_scores(cfg)
+    assert dict(zip(scores["variant_id"], scores["alphamissense"])) == {"K2E": 0.91, "T3A": 0.12}
+    assert provenance["n_scores"] == 2 and len(provenance["sha256"]) == 64
+    # Rows from the genome-wide release: licence lines, a '#' header, other proteins mixed in.
+    path.write_text("# Copyright notice\n#\n#uniprot_id\tprotein_variant\tam_pathogenicity\tam_class\n"
+                    "P00000\tK2E\t0.91\tlikely_pathogenic\nQ99999\tK2E\t0.5\tambiguous\n")
+    scores, _ = load_scores(cfg)
+    assert dict(zip(scores["variant_id"], scores["alphamissense"])) == {"K2E": 0.91}
+
+
 # ----------------------------------------------------------------------------- structure
 
 def test_kabsch_recovers_rigid_motion():
@@ -195,6 +310,42 @@ def test_analysis_and_export_recover_planted_signal(synthetic_run):
     meta = dict(con.execute("SELECT key, value FROM meta"))
     assert json.loads(meta["construct"])["start"] == 101
     assert con.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 80
+
+
+def test_analysis_with_cancer_population_and_alphamissense(synthetic_run):
+    import pandas as pd
+
+    from varfold.analyze import run_analysis
+    from varfold.export import export_web_db
+
+    cfg = synthetic_run
+    ds = pd.read_csv(cfg.paths.dataset)
+    ds.loc[ds.index[ds["label"] == "benign"][:5], "label"] = "population"
+    ds.loc[ds.index[ds["label"] == "pathogenic"][:3], "label"] = "cancer"
+    ds.to_csv(cfg.paths.dataset, index=False)
+    variants = ds[ds["variant_id"] != "WT"]
+    damaging = variants["label"].isin(["pathogenic", "cancer"])
+    am_path = cfg.paths.alphamissense(cfg.uniprot)
+    am_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"protein_variant": variants["variant_id"],
+                  "am_pathogenicity": np.where(damaging, 0.9, 0.2)}).to_csv(am_path, index=False)
+
+    result = run_analysis(cfg)
+    assert result["model"]["alphamissense"]["n_scores"] == len(variants)
+    disc = {d["metric"]: d for d in result["discrimination"]}
+    assert disc["alphamissense"]["auc"] == 1.0
+    assert disc["delta_local_plddt"]["n_pos"] == 13 and disc["delta_local_plddt"]["n_neg"] == 5
+    tolerated = {d["metric"]: d for d in result["discrimination_tolerated"]}
+    assert tolerated["delta_local_plddt"]["n_neg"] == 10  # 5 benign + 5 population
+    assert result["versus_alphamissense"] and result["versus_alphamissense_tolerated"]
+    control = result["breaking_points"]["pathogenic_vs_cancer"]["table"]
+    assert sum(control[0]) == 13 and sum(control[1]) == 3
+    report = (cfg.paths.analysis / "report.md").read_text()
+    assert "Negative control" in report and "Pathogenic vs tolerated" in report
+
+    con = sqlite3.connect(export_web_db(cfg))
+    assert con.execute("SELECT COUNT(*) FROM variants WHERE label='population' AND alphamissense = 0.2").fetchone()[0] == 5
+    assert con.execute("SELECT SUM(n_cancer) FROM positions").fetchone()[0] == 3
 
 
 # ----------------------------------------------------------------------------- review regressions

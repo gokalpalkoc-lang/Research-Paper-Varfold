@@ -83,7 +83,8 @@ def cmd_status(cfg, args):
     by_label = df.assign(done=df["variant_id"].isin(done)).groupby("label")["done"].agg(["sum", "count"])
     print(f"settings: {fp or '(WT not folded yet)'}")
     print(by_label.rename(columns={"sum": "folded", "count": "total"}).to_string())
-    runtimes = [recs[v]["runtime_s"] for v in done]
+    # Runs timed with the wall clock before it was replaced can carry negative runtimes.
+    runtimes = [recs[v]["runtime_s"] for v in done if recs[v]["runtime_s"] > 0]
     if runtimes:
         mean = sum(runtimes) / len(runtimes)
         remaining = len(df) - len(done)

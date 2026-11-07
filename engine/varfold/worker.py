@@ -44,7 +44,7 @@ class WorkerState:
         self.gpu = asyncio.Lock()
         self.waiting = 0
         self.served = 0
-        self.started = time.time()
+        self.started = time.monotonic()
 
     def _cache_path(self, key: str) -> Path | None:
         return self.cache_dir / f"{key}.json.gz" if self.cache_dir else None
@@ -89,7 +89,7 @@ def create_app(predictor_factory, token: str, max_length: int = 400, max_queue: 
         w: WorkerState = request.app.state.worker
         return {"status": "ok", "device": w.predictor.device_name, "fingerprint": w.predictor.fingerprint,
                 "busy": w.gpu.locked(), "queue": w.waiting, "max_queue": w.max_queue,
-                "max_length": w.max_length, "served": w.served, "uptime_s": round(time.time() - w.started)}
+                "max_length": w.max_length, "served": w.served, "uptime_s": round(time.monotonic() - w.started)}
 
     @app.post("/fold", dependencies=[Depends(authorise)])
     async def fold(body: FoldRequest, request: Request):

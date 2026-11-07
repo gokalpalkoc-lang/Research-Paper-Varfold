@@ -2,8 +2,9 @@
 
 Colour roles follow one validated palette (shared with the web app):
 benign = blue, pathogenic = orange, VUS = aqua — all-pairs CVD-safe for up to
-three classes. Aqua sits below 3:1 contrast on white, so classes are always
-also named on an axis or legend. Structure confidence uses the AlphaFold pLDDT
+three classes. Cancer-context variants take the palette's fourth hue (yellow) and
+population variants neutral grey (background, like the WT). Aqua and yellow sit
+below 3:1 contrast on white, so classes are always also named on an axis or legend. Structure confidence uses the AlphaFold pLDDT
 convention so structural biologists read it without a legend lookup.
 """
 
@@ -24,10 +25,13 @@ from .stats import roc_curve  # noqa: E402
 SURFACE = "#fcfcfb"
 INK, INK2, MUTED = "#0b0b0b", "#52514e", "#898781"
 GRID, AXIS = "#e1e0d9", "#c3c2b7"
-CLASS_COLORS = {"benign": "#2a78d6", "pathogenic": "#eb6834", "vus": "#1baf7a"}
-CLASS_NAMES = {"benign": "Benign / LB", "pathogenic": "Pathogenic / LP", "vus": "VUS"}
+CLASS_COLORS = {"benign": "#2a78d6", "pathogenic": "#eb6834", "vus": "#1baf7a", "cancer": "#eda100",
+                "population": "#898781"}
+CLASS_NAMES = {"benign": "Benign / LB", "pathogenic": "Pathogenic / LP", "vus": "VUS",
+               "cancer": "Cancer context", "population": "gnomAD carriers"}
 SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
-ROC_COLORS = {"delta_local_plddt": SERIES[0], "llr": SERIES[1], "blosum62": SERIES[2], "wt_site_plddt": SERIES[3]}
+ROC_COLORS = {"delta_local_plddt": SERIES[0], "llr": SERIES[1], "blosum62": SERIES[2], "wt_site_plddt": SERIES[3],
+              "alphamissense": INK2}
 PLDDT_BANDS = [(90, 100, "#0053d6", "Very high (>90)"), (70, 90, "#65cbf3", "Confident (70–90)"),
                (50, 70, "#ffdb13", "Low (50–70)"), (0, 50, "#ff7d45", "Very low (<50)")]
 DIVERGING = LinearSegmentedColormap.from_list("delta", ["#e34948", "#f0efec", "#256abf"])
@@ -88,7 +92,7 @@ def wt_profile(wt_plddt: np.ndarray, start: int, metrics: pd.DataFrame, annotati
 
 
 def delta_by_class(metrics: pd.DataFrame, null_floor: float, out_dir: Path, seed: int) -> list[str]:
-    classes = [c for c in ("benign", "pathogenic", "vus") if (metrics["label"] == c).any()]
+    classes = [c for c in ("benign", "population", "pathogenic", "cancer", "vus") if (metrics["label"] == c).any()]
     if not classes:
         return []
     rng = np.random.default_rng(seed)
@@ -160,7 +164,7 @@ def structure_vs_sequence(metrics: pd.DataFrame, out_dir: Path) -> list[str]:
     if m.empty:
         return []
     fig, ax = plt.subplots(figsize=(4.2, 3.4))
-    for cls in ("vus", "benign", "pathogenic"):  # draw the largest groups first
+    for cls in ("vus", "population", "benign", "pathogenic", "cancer"):  # pathogenic and cancer drawn on top
         sub = m[m["label"] == cls]
         if len(sub):
             ax.scatter(sub["llr"], sub["delta_local_plddt"], s=14, color=CLASS_COLORS[cls], edgecolors=SURFACE,

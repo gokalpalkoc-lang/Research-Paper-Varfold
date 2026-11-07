@@ -9,8 +9,13 @@ from typing import Any
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CLINICAL_CLASSES = ("pathogenic", "benign", "vus", "conflicting")
+# "cancer": pathogenic only in a cancer context (see curate.CANCER_TERMS).
+CLINICAL_CLASSES = ("pathogenic", "benign", "vus", "conflicting", "cancer")
+# "population": clinically unclassified, but carried by people in gnomAD (see PopulationOptions).
+VARIANT_CLASSES = CLINICAL_CLASSES + ("population",)
 SCAN_MODES = ("none", "alanine", "saturation")
+POPULATION_DATASETS = ("none", "gnomad_r4")
+CARRIER_COUNTS = ("ac_hemi", "ac_hom")
 
 
 @dataclass
@@ -34,6 +39,17 @@ class VariantOptions:
     include_classes: list[str] = field(default_factory=lambda: list(CLINICAL_CLASSES))
     min_review_stars: int = 0
     scan: str = "none"
+
+
+@dataclass
+class PopulationOptions:
+    # gnomAD release to take carrier counts from; "none" turns population variants off.
+    dataset: str = "none"
+    # Who counts as a carrier: hemizygous XY people (ac_hemi) for X-linked genes, homozygous
+    # people (ac_hom) for autosomal ones. Carrying the variant in one copy only says little.
+    count: str = "ac_hemi"
+    # An unclassified variant seen in at least this many carriers becomes "population".
+    min_carriers: int = 1
 
 
 @dataclass
@@ -70,6 +86,7 @@ class TargetConfig:
     construct: Construct
     reference_structure: ReferenceStructure = field(default_factory=ReferenceStructure)
     variants: VariantOptions = field(default_factory=VariantOptions)
+    population: PopulationOptions = field(default_factory=PopulationOptions)
     folding: FoldingOptions = field(default_factory=FoldingOptions)
     llr: LLROptions = field(default_factory=LLROptions)
     analysis: AnalysisOptions = field(default_factory=AnalysisOptions)
@@ -84,11 +101,17 @@ class TargetConfig:
     def validate(self) -> None:
         if self.construct.start < 1 or self.construct.end < self.construct.start:
             raise ValueError(f"invalid construct range {self.construct}")
-        bad = set(self.variants.include_classes) - set(CLINICAL_CLASSES)
+        bad = set(self.variants.include_classes) - set(VARIANT_CLASSES)
         if bad:
-            raise ValueError(f"unknown variant classes {sorted(bad)}; choose from {CLINICAL_CLASSES}")
+            raise ValueError(f"unknown variant classes {sorted(bad)}; choose from {VARIANT_CLASSES}")
         if self.variants.scan not in SCAN_MODES:
             raise ValueError(f"variants.scan must be one of {SCAN_MODES}")
+        if self.population.dataset not in POPULATION_DATASETS:
+            raise ValueError(f"population.dataset must be one of {POPULATION_DATASETS}")
+        if self.population.count not in CARRIER_COUNTS:
+            raise ValueError(f"population.count must be one of {CARRIER_COUNTS}")
+        if self.population.min_carriers < 1:
+            raise ValueError("population.min_carriers must be at least 1")
         if self.folding.precision not in ("fp16", "fp32"):
             raise ValueError("folding.precision must be fp16 or fp32")
         if self.llr.context not in ("full", "construct"):
@@ -130,6 +153,10 @@ class RunPaths:
     @property
     def llr(self) -> Path:
         return self.root / "llr.csv"
+
+    def alphamissense(self, uniprot: str) -> Path:
+        """Per-protein AlphaMissense scores, saved by hand (see alphamissense.py)."""
+        return self.raw / f"AF-{uniprot}-F1-aa-substitutions.csv"
 
     @property
     def validation(self) -> Path:

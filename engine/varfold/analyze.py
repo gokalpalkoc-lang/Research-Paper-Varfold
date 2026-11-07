@@ -19,6 +19,9 @@ from .stats import (benjamini_hochberg, compare_groups, empirical_lower_p, fishe
 
 log = logging.getLogger(__name__)
 PRIMARY = "delta_local_plddt"
+BENIGN = ("benign",)
+# Secondary negative set: clinical benign plus variants carried by people in gnomAD.
+TOLERATED = ("benign", "population")
 
 
 def _clean(obj):
@@ -38,8 +41,8 @@ def _clean(obj):
     return obj
 
 
-def discrimination(metrics: pd.DataFrame, n_boot: int, seed: int) -> list[dict]:
-    labeled = metrics[metrics["label"].isin(["pathogenic", "benign"])]
+def discrimination(metrics: pd.DataFrame, n_boot: int, seed: int, negatives: tuple[str, ...] = BENIGN) -> list[dict]:
+    labeled = metrics[metrics["label"].isin(["pathogenic", *negatives])]
     y = (labeled["label"] == "pathogenic").to_numpy()
     rows = []
     for m in METRICS:
@@ -53,8 +56,11 @@ def discrimination(metrics: pd.DataFrame, n_boot: int, seed: int) -> list[dict]:
     return rows
 
 
-def versus_baseline(metrics: pd.DataFrame, baseline: str, n_perm: int, seed: int) -> list[dict]:
-    labeled = metrics[metrics["label"].isin(["pathogenic", "benign"])].dropna(subset=[baseline])
+def versus_baseline(metrics: pd.DataFrame, baseline: str, n_perm: int, seed: int,
+                    negatives: tuple[str, ...] = BENIGN) -> list[dict]:
+    if metrics[baseline].isna().all():
+        return []
+    labeled = metrics[metrics["label"].isin(["pathogenic", *negatives])].dropna(subset=[baseline])
     y = (labeled["label"] == "pathogenic").to_numpy()
     if y.sum() < 2 or (~y).sum() < 2:
         return []
@@ -72,7 +78,7 @@ def versus_baseline(metrics: pd.DataFrame, baseline: str, n_perm: int, seed: int
 def correlations(metrics: pd.DataFrame) -> list[dict]:
     out = []
     for a in ("delta_local_plddt", "delta_mean_plddt", "rmsd_ca", "lddt_local"):
-        for b in ("llr", "blosum62", "wt_site_plddt", "wt_site_burial"):
+        for b in ("llr", "alphamissense", "blosum62", "wt_site_plddt", "wt_site_burial"):
             sub = metrics[[a, b]].dropna()
             if len(sub) < 5:
                 continue
@@ -97,6 +103,8 @@ def position_table(metrics: pd.DataFrame, wt_plddt: list[float], burial: list[in
         "n_pathogenic": g["label"].apply(lambda s: int((s == "pathogenic").sum())),
         "n_benign": g["label"].apply(lambda s: int((s == "benign").sum())),
         "n_vus": g["label"].apply(lambda s: int((s == "vus").sum())),
+        "n_cancer": g["label"].apply(lambda s: int((s == "cancer").sum())),
+        "n_population": g["label"].apply(lambda s: int((s == "population").sum())),
         "mean_delta_local_plddt": g["delta_local_plddt"].mean(),
         "min_delta_local_plddt": g["delta_local_plddt"].min(),
         "max_rmsd_ca": g["rmsd_ca"].max(),
@@ -104,7 +112,7 @@ def position_table(metrics: pd.DataFrame, wt_plddt: list[float], burial: list[in
         "n_breaking_points": g["breaking_point"].sum().astype(int),
     }).reset_index()
     out = base.merge(agg, on="position", how="left")
-    for c in ("n_variants", "n_pathogenic", "n_benign", "n_vus", "n_breaking_points"):
+    for c in ("n_variants", "n_pathogenic", "n_benign", "n_vus", "n_cancer", "n_population", "n_breaking_points"):
         out[c] = out[c].fillna(0).astype(int)
     return out
 
@@ -152,14 +160,25 @@ def run_analysis(cfg: TargetConfig) -> dict:
     disc = discrimination(metrics, A.bootstrap, A.seed)
     high_conf = metrics[(metrics["review_stars"].fillna(0) >= 1) | metrics["uniprot_curated"]]
     disc_hc = discrimination(high_conf, A.bootstrap, A.seed)
-    vs_llr = versus_baseline(metrics, "llr", A.permutations, A.seed) if metrics["llr"].notna().any() else []
+    vs_llr = versus_baseline(metrics, "llr", A.permutations, A.seed)
+    vs_am = versus_baseline(metrics, "alphamissense", A.permutations, A.seed)
     vs_site = versus_baseline(metrics, "wt_site_plddt", A.permutations, A.seed)
     vs_blosum = versus_baseline(metrics, "blosum62", A.permutations, A.seed)
+    # The same questions against the larger negative set, when population variants exist.
+    has_population = bool((metrics["label"] == "population").any())
+    disc_tol = discrimination(metrics, A.bootstrap, A.seed, TOLERATED) if has_population else []
+    vs_llr_tol = versus_baseline(metrics, "llr", A.permutations, A.seed, TOLERATED) if has_population else []
+    vs_am_tol = versus_baseline(metrics, "alphamissense", A.permutations, A.seed, TOLERATED) if has_population else []
 
     # Variant-level: is a pathogenic variant more often a breaking point than a benign one?
     # (A residue-level test would be confounded by how many variants each residue carries.)
     pb = metrics[metrics["label"].isin(["pathogenic", "benign"])]
     enrichment = fisher_enrichment((pb["label"] == "pathogenic").to_numpy(), pb["breaking_point"].to_numpy(bool))
+    # Negative control: cancer-context variants are mostly gain-of-function and should stay folded,
+    # so germline pathogenic variants should be breaking points more often than they are.
+    pc = metrics[metrics["label"].isin(["pathogenic", "cancer"])]
+    control = (fisher_enrichment((pc["label"] == "pathogenic").to_numpy(), pc["breaking_point"].to_numpy(bool))
+               if (pc["label"] == "cancer").any() else None)
     bp = metrics[metrics["breaking_point"]]
     by_class = {c: {"n": int((metrics["label"] == c).sum()),
                     "n_breaking_points": int((bp["label"] == c).sum())}
@@ -176,7 +195,7 @@ def run_analysis(cfg: TargetConfig) -> dict:
     labeled = metrics[metrics["label"].isin(["pathogenic", "benign"])]
     y = (labeled["label"] == "pathogenic").to_numpy()
     curves = []
-    for key in (PRIMARY, "llr", "blosum62", "wt_site_plddt"):
+    for key in (PRIMARY, "alphamissense", "llr", "blosum62", "wt_site_plddt"):
         row = next((r for r in disc if r["metric"] == key and r.get("auc") is not None), None)
         if row is None:
             continue
@@ -195,7 +214,8 @@ def run_analysis(cfg: TargetConfig) -> dict:
         "target": meta["target"],
         "construct": {"start": start, "end": end, "length": end - start + 1},
         "model": {"fingerprint": info["fingerprint"], "folding": cfg.folding.model,
-                  "num_recycles": cfg.folding.num_recycles, "llr": cfg.llr.model},
+                  "num_recycles": cfg.folding.num_recycles, "llr": cfg.llr.model,
+                  "alphamissense": info["alphamissense"]},
         "dataset": {"counts": metrics["label"].value_counts().to_dict(), "n_folded": len(metrics),
                     "n_missing": info["n_missing"], "n_other_settings": info["n_other_settings"],
                     "n_stale": info["n_stale"]},
@@ -209,13 +229,18 @@ def run_analysis(cfg: TargetConfig) -> dict:
         "breaking_points": {"fdr": A.breaking_point_fdr, "local_window": A.local_window,
                             "n_variants": len(bp), "n_positions": int(bp["position"].nunique()),
                             "by_class": by_class, "pathogenic_enrichment": enrichment,
+                            "pathogenic_vs_cancer": control,
                             "top": bp.nsmallest(25, PRIMARY)[["variant_id", "label", PRIMARY, "local_q",
                                                               "rmsd_ca", "llr"]].to_dict("records")},
         "discrimination": disc,
         "discrimination_high_confidence_labels": disc_hc,
         "versus_llr": vs_llr,
+        "versus_alphamissense": vs_am,
         "versus_blosum62": vs_blosum,
         "versus_wt_site_plddt": vs_site,
+        "discrimination_tolerated": disc_tol,
+        "versus_llr_tolerated": vs_llr_tol,
+        "versus_alphamissense_tolerated": vs_am_tol,
         "correlations": correlations(metrics),
         "figures": figs,
     })
@@ -283,11 +308,26 @@ def render_report(r: dict) -> str:
         f"- Breaking-point rate, pathogenic vs benign variants: odds ratio "
         f"{_odds(en)}, one-sided Fisher p = {_p(en['p_one_sided'])} "
         f"(table [[P breaking, P not], [B breaking, B not]] = {en['table']}).",
+    ]
+    if ctl := bp.get("pathogenic_vs_cancer"):
+        lines.append(f"- Negative control, germline pathogenic vs cancer-context variants (mostly gain-of-function, "
+                     f"expected to stay folded): odds ratio {_odds(ctl)}, one-sided Fisher p = {_p(ctl['p_one_sided'])} "
+                     f"(table [[P breaking, P not], [cancer breaking, cancer not]] = {ctl['table']}).")
+    lines += [
         "", "| Variant | Class | Δ local pLDDT | q | Cα RMSD (Å) | ESM-2 LLR |", "|---|---|---:|---:|---:|---:|",
     ]
     for t in bp["top"][:15]:
         lines.append(f"| {t['variant_id']} | {t['label']} | {_f(t['delta_local_plddt'], 2)} | {_p(t['local_q'])} | "
                      f"{_f(t['rmsd_ca'], 2)} | {_f(t['llr'], 2)} |")
+
+    def comparison_table(rows):
+        out = ["| Metric | ΔAUC [95% CI] | p (permutation) | p (DeLong) |", "|---|---|---:|---:|"]
+        for c in rows:
+            if c["difference"] is None:
+                continue
+            out.append(f"| {c['metric']} | {c['difference']:+.3f} [{c['ci95'][0]:+.3f}, {c['ci95'][1]:+.3f}] "
+                       f"| {_p(c['p'])} | {_p(c['p_delong'])} |")
+        return out
 
     def disc_table(rows):
         out = ["| Metric | Kind | n (P/B) | AUC [95% CI] | Cliff's δ | p | q (BH) |",
@@ -306,17 +346,22 @@ def render_report(r: dict) -> str:
     lines += disc_table(r["discrimination"])
     lines += ["", "High-confidence labels only (ClinVar ≥1★ or UniProt-curated):", ""]
     lines += disc_table(r["discrimination_high_confidence_labels"])
-    for key, title in (("versus_llr", "ESM-2 LLR"), ("versus_blosum62", "BLOSUM62"),
-                       ("versus_wt_site_plddt", "WT site pLDDT")):
+    for key, title in (("versus_alphamissense", "AlphaMissense"), ("versus_llr", "ESM-2 LLR"),
+                       ("versus_blosum62", "BLOSUM62"), ("versus_wt_site_plddt", "WT site pLDDT")):
         if r[key]:
             lines += ["", f"### Paired comparison against {title}", "",
-                      "ΔAUC with DeLong 95% CI; p from a paired permutation test (DeLong p for reference).", "",
-                      "| Metric | ΔAUC [95% CI] | p (permutation) | p (DeLong) |", "|---|---|---:|---:|"]
-            for c in r[key]:
-                if c["difference"] is None:
-                    continue
-                lines.append(f"| {c['metric']} | {c['difference']:+.3f} [{c['ci95'][0]:+.3f}, {c['ci95'][1]:+.3f}] "
-                             f"| {_p(c['p'])} | {_p(c['p_delong'])} |")
+                      "ΔAUC with DeLong 95% CI; p from a paired permutation test (DeLong p for reference).", ""]
+            lines += comparison_table(r[key])
+    if r["discrimination_tolerated"]:
+        lines += ["", "## Pathogenic vs tolerated (benign + population)", "",
+                  "Secondary analysis with a larger negative set: clinical benign variants plus clinically "
+                  "unclassified variants carried by people in gnomAD (see `population` in the config). Carriers can "
+                  "have mild disease, so this set is noisier than the benign one.", ""]
+        lines += disc_table(r["discrimination_tolerated"])
+        for key, title in (("versus_alphamissense_tolerated", "AlphaMissense"), ("versus_llr_tolerated", "ESM-2 LLR")):
+            if r[key]:
+                lines += ["", f"### Paired comparison against {title} (tolerated negatives)", ""]
+                lines += comparison_table(r[key])
     lines += ["", "## Correlations (Spearman, all folded variants)", "", "| x | y | n | ρ | p |", "|---|---|---:|---:|---:|"]
     for c in r["correlations"]:
         lines.append(f"| {c['x']} | {c['y']} | {c['n']} | {_f(c['spearman_rho'])} | {_p(c['p'])} |")

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 from scipy.ndimage import minimum_filter1d
 
+from .alphamissense import load_scores
 from .config import TargetConfig
 from .curate import load_dataset, load_meta
 from .folding import read_predictions, structure_file
@@ -65,6 +66,7 @@ METRICS = [
     Metric("rmsd_ca", "Cα RMSD vs WT (Å)", +1, "structural"),
     Metric("llr", "ESM-2 LLR", -1, "baseline"),
     Metric("blosum62", "BLOSUM62 score", -1, "baseline"),
+    Metric("alphamissense", "AlphaMissense", +1, "baseline"),
     Metric("wt_site_plddt", "WT site pLDDT", +1, "positional"),
     Metric("wt_site_burial", "WT site burial (Cα within 10 Å)", +1, "positional"),
 ]
@@ -149,6 +151,8 @@ def compute_metrics(cfg: TargetConfig) -> tuple[pd.DataFrame, np.ndarray, dict]:
             "variant_id": r.variant_id, "position": int(r.position), "wt": r.wt, "mt": r.mt,
             "label": r.label, "in_scan": bool(r.in_scan),
             "review_stars": r.review_stars, "uniprot_curated": bool(r.uniprot_curated),
+            # Datasets curated before population counts existed have no such column.
+            "gnomad_carriers": getattr(r, "gnomad_carriers", pd.NA),
             "mean_plddt": rec["mean_plddt"], "ptm": rec["ptm"],
             "delta_mean_plddt": rec["mean_plddt"] - wt.mean_plddt,
             "delta_ptm": rec["ptm"] - wt.ptm,
@@ -178,8 +182,10 @@ def compute_metrics(cfg: TargetConfig) -> tuple[pd.DataFrame, np.ndarray, dict]:
         out = out.merge(llr, on="variant_id", how="left")
     else:
         out["llr"] = np.nan
+    am, am_source = load_scores(cfg)
+    out = out.merge(am, on="variant_id", how="left") if am is not None and len(out) else out.assign(alphamissense=np.nan)
     null = np.concatenate(null_parts) if null_parts else np.array([])
     info = {"fingerprint": fingerprint, "n_missing": len(missing), "n_other_settings": len(other_fp),
-            "n_stale": len(stale), "wt_mean_plddt": wt.mean_plddt, "wt_ptm": wt.ptm,
+            "n_stale": len(stale), "alphamissense": am_source, "wt_mean_plddt": wt.mean_plddt, "wt_ptm": wt.ptm,
             "wt_plddt": wt.plddt.tolist(), "wt_burial": wt.burial.tolist()}
     return out, null, info
