@@ -213,6 +213,16 @@ journalctl --user -fu varfold-batch          # or: tail -f data/ar_lbd/varfold.l
 - **Enrichment:** whether pathogenic variants become breaking points more often than
   benign ones is a variant-level one-sided Fisher test. A residue-level version would be
   confounded by how many variants each residue carries.
+- **Mechanism map** (`mechanism:` in the config, `analysis/mechanism.csv`): every residue
+  is tagged from human AR crystal structures as a testosterone contact (2AM9), coactivator
+  groove (TIF2 peptide, 2Q7J; AR N-terminal FQNLF peptide, 2Q7I), dimer interface (5JJM,
+  chain A and its symmetry copy in biological assembly 1), buried core (relative
+  accessibility < 0.20 in 2AM9) or surface; 4 Å heavy-atom contacts, SIFTS numbering,
+  first matching class wins. ESMFold folds one chain with no hormone or partner, so the
+  test is within the pathogenic class: core variants should be breaking points more often
+  than interaction-site variants (one-sided Fisher), with per-class AUCs alongside.
+  Pathogenic variants are mostly buried (151 core vs 84 surface) while the negatives are
+  mostly on the surface, so a pooled AUC partly measures burial; read it per class.
 - **Expect a sober result.** ESMFold was not trained to predict mutation effects, and
   single substitutions often leave predictions nearly unchanged. "pLDDT tracks
   pathogenicity only at buried core positions" or "structure adds little over ESM-2"

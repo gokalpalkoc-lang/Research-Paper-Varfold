@@ -53,6 +53,18 @@ class PopulationOptions:
 
 
 @dataclass
+class MechanismOptions:
+    """Experimental structures that tag each residue with a mechanism (see mechanism.py)."""
+    ligand: dict | None = None             # {pdb_id, chain, ligand}: hormone-contact residues
+    coactivator: list = field(default_factory=list)  # [{pdb_id, chain, partner}]: AF-2 groove
+    # [{pdb_id, chain, partner} or {pdb_id, chain, assembly, partner_model}]: dimer interface
+    dimer: list = field(default_factory=list)
+    burial: dict | None = None             # {pdb_id, chain}: relative solvent accessibility
+    contact_cutoff: float = 4.0            # Å between heavy atoms
+    buried_rsasa: float = 0.20             # below this relative accessibility a residue is core
+
+
+@dataclass
 class FoldingOptions:
     model: str = "facebook/esmfold_v1"
     num_recycles: int = 4
@@ -87,6 +99,7 @@ class TargetConfig:
     reference_structure: ReferenceStructure = field(default_factory=ReferenceStructure)
     variants: VariantOptions = field(default_factory=VariantOptions)
     population: PopulationOptions = field(default_factory=PopulationOptions)
+    mechanism: MechanismOptions = field(default_factory=MechanismOptions)
     folding: FoldingOptions = field(default_factory=FoldingOptions)
     llr: LLROptions = field(default_factory=LLROptions)
     analysis: AnalysisOptions = field(default_factory=AnalysisOptions)

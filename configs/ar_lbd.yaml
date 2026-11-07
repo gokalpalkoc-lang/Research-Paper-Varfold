@@ -48,6 +48,20 @@ population:
   count: ac_hemi
   min_carriers: 1
 
+# Mechanism map: which residues bind the hormone, the coactivator groove (AF-2) or
+# the other LBD of the dimer, and which are buried. All human AR, mapped via SIFTS.
+mechanism:
+  ligand: {pdb_id: 2AM9, chain: A, ligand: TES}         # testosterone, 1.64 Å
+  coactivator:
+    - {pdb_id: 2Q7J, chain: A, partner: B}               # TIF2 box 3 peptide, 1.9 Å
+    - {pdb_id: 2Q7I, chain: A, partner: B}               # AR N-terminal FQNLF peptide (N/C interaction), 1.87 Å
+  dimer:
+    # LBD homodimer, 2.15 Å: chain A and its symmetry copy (model 2 of biological assembly 1)
+    - {pdb_id: 5JJM, chain: A, assembly: 1, partner_model: 2}
+  burial: {pdb_id: 2AM9, chain: A}
+  contact_cutoff: 4.0
+  buried_rsasa: 0.20
+
 folding:
   model: facebook/esmfold_v1
   num_recycles: 4

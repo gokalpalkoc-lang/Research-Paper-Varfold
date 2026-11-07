@@ -13,6 +13,7 @@ from scipy import stats as sps
 from . import figures
 from .config import TargetConfig
 from .curate import load_meta
+from .mechanism import CLASSES as MECHANISMS, INTERACTION_CLASSES, annotate
 from .metrics import METRIC_BY_KEY, METRICS, compute_metrics
 from .stats import (benjamini_hochberg, compare_groups, empirical_lower_p, fisher_enrichment,
                     paired_auc_difference)
@@ -73,6 +74,56 @@ def versus_baseline(metrics: pd.DataFrame, baseline: str, n_perm: int, seed: int
         out.append({"metric": m.key, "baseline": baseline,
                     **paired_auc_difference(a, b, y, n_perm=n_perm, seed=seed)})
     return out
+
+
+def mechanism_summary(metrics: pd.DataFrame, n_boot: int, seed: int) -> dict:
+    """Where structural confidence tracks pathogenicity, split by what each site does.
+
+    ESMFold folds one chain with no hormone and no partner, so a substitution that breaks
+    an interaction but not the fold should be invisible to it. The pre-registered test is
+    therefore within the pathogenic class: buried-core variants should be breaking points
+    more often (one-sided Fisher), and lose more local confidence (one-sided Mann-Whitney),
+    than variants at the ligand, coactivator or dimer sites. Per-class AUCs against the
+    tolerated set (benign + population) are reported with their n; most classes are small.
+    """
+    rows = []
+    for cls in MECHANISMS:
+        sub = metrics[metrics["mechanism"] == cls]
+        path = sub[sub["label"] == "pathogenic"]
+        tol = sub[sub["label"].isin(TOLERATED)]
+        row = {"mechanism": cls, "n_pathogenic": len(path), "n_tolerated": len(tol),
+               "n_cancer": int((sub["label"] == "cancer").sum()),
+               "pathogenic_breaking": int(path["breaking_point"].sum()),
+               "pathogenic_breaking_rate": float(path["breaking_point"].mean()) if len(path) else None,
+               "median_delta_local_pathogenic": float(path[PRIMARY].median()) if len(path) else None,
+               "median_delta_local_tolerated": float(tol[PRIMARY].median()) if len(tol) else None}
+        y = np.r_[np.ones(len(path), bool), np.zeros(len(tol), bool)]
+        for key in (PRIMARY, "alphamissense"):
+            vals = np.r_[path[key].to_numpy(float), tol[key].to_numpy(float)]
+            res = compare_groups(vals, y, METRIC_BY_KEY[key].direction, n_boot, seed)
+            row[f"auc_{key}"] = res.get("auc")
+            row[f"auc_{key}_ci95"] = res.get("auc_ci95")
+        rows.append(row)
+
+    path = metrics[metrics["label"] == "pathogenic"]
+    core = path[path["mechanism"] == "core"]
+    site = path[path["mechanism"].isin(INTERACTION_CLASSES)]
+    tests = {}
+    if len(core) and len(site):
+        both = pd.concat([core, site])
+        tests["breaking_core_vs_interaction"] = fisher_enrichment(
+            (both["mechanism"] == "core").to_numpy(), both["breaking_point"].to_numpy(bool))
+        mw = sps.mannwhitneyu(core[PRIMARY], site[PRIMARY], alternative="less")
+        tests["delta_local_core_vs_interaction"] = {"n_core": len(core), "n_interaction": len(site),
+                                                    "median_core": float(core[PRIMARY].median()),
+                                                    "median_interaction": float(site[PRIMARY].median()),
+                                                    "p_one_sided": float(mw.pvalue)}
+    groups = [g[PRIMARY].to_numpy() for _, g in path.groupby("mechanism") if len(g) >= 3]
+    if len(groups) >= 2:
+        kw = sps.kruskal(*groups)
+        tests["kruskal_delta_local_pathogenic"] = {"n_groups": len(groups), "h": float(kw.statistic),
+                                                   "p": float(kw.pvalue)}
+    return {"classes": rows, "tests": tests}
 
 
 def correlations(metrics: pd.DataFrame) -> list[dict]:
@@ -150,11 +201,17 @@ def run_analysis(cfg: TargetConfig) -> dict:
     metrics["local_p"] = empirical_lower_p(metrics[PRIMARY].to_numpy(), null)
     metrics["local_q"] = benjamini_hochberg(metrics["local_p"].to_numpy())
     metrics["breaking_point"] = metrics["local_q"] < A.breaking_point_fdr
+    mech = annotate(cfg)
+    if mech is not None:
+        metrics = metrics.merge(mech[["position", "mechanism", "rsasa"]], on="position", how="left")
     metrics.sort_values(["position", "mt"]).to_csv(paths.analysis / "metrics.csv", index=False)
 
     wt_plddt = np.asarray(info["wt_plddt"])
     start, end = cfg.construct.start, cfg.construct.end
     positions = position_table(metrics, info["wt_plddt"], info["wt_burial"], meta["construct"]["sequence"], start)
+    if mech is not None:
+        positions = positions.merge(mech, on="position", how="left")
+    by_mechanism = mechanism_summary(metrics, A.bootstrap, A.seed) if mech is not None else None
     positions.to_csv(paths.analysis / "positions.csv", index=False)
 
     disc = discrimination(metrics, A.bootstrap, A.seed)
@@ -208,6 +265,8 @@ def run_analysis(cfg: TargetConfig) -> dict:
     figs += figures.position_profile(positions, start, end, paths.figures)
     figs += figures.structure_vs_sequence(metrics, paths.figures)
     figs += figures.saturation_heatmap(metrics, start, end, paths.figures)
+    if mech is not None:
+        figs += figures.delta_by_mechanism(metrics, null_floor, paths.figures, A.seed)
 
     result = _clean({
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -242,6 +301,7 @@ def run_analysis(cfg: TargetConfig) -> dict:
         "versus_llr_tolerated": vs_llr_tol,
         "versus_alphamissense_tolerated": vs_am_tol,
         "correlations": correlations(metrics),
+        "mechanism": by_mechanism,
         "figures": figs,
     })
     (paths.analysis / "stats.json").write_text(json.dumps(result, indent=2, allow_nan=False))
@@ -362,6 +422,35 @@ def render_report(r: dict) -> str:
             if r[key]:
                 lines += ["", f"### Paired comparison against {title} (tolerated negatives)", ""]
                 lines += comparison_table(r[key])
+    if mech := r.get("mechanism"):
+        def a(row, key):
+            v, ci = row[f"auc_{key}"], row[f"auc_{key}_ci95"]
+            return "—" if v is None else f"{v:.2f} [{ci[0]:.2f}–{ci[1]:.2f}]"
+        lines += ["", "## By mechanism (what the mutated site does)", "",
+                  "Sites from experimental structures (`analysis/mechanism.json`): hormone contact, coactivator "
+                  "groove, dimer interface, else buried core or surface. ESMFold sees none of the partners, so "
+                  "interaction-site variants are expected to escape it. AUC: pathogenic vs tolerated within the class.",
+                  "", "| Mechanism | P | tolerated | cancer | P breaking points | median Δ local (P) | "
+                  "AUC Δ local | AUC AlphaMissense |", "|---|---:|---:|---:|---:|---:|---|---|"]
+        for row in mech["classes"]:
+            if not (row["n_pathogenic"] or row["n_tolerated"] or row["n_cancer"]):
+                continue
+            rate = "—" if row["pathogenic_breaking_rate"] is None else (
+                f"{row['pathogenic_breaking']} ({row['pathogenic_breaking_rate']:.0%})")
+            lines.append(f"| {row['mechanism']} | {row['n_pathogenic']} | {row['n_tolerated']} | {row['n_cancer']} | "
+                         f"{rate} | {_f(row['median_delta_local_pathogenic'], 2)} | {a(row, PRIMARY)} | "
+                         f"{a(row, 'alphamissense')} |")
+        t = mech["tests"]
+        if b := t.get("breaking_core_vs_interaction"):
+            lines.append(f"\n- Pathogenic breaking-point rate, buried core vs interaction sites: odds ratio {_odds(b)}, "
+                         f"one-sided Fisher p = {_p(b['p_one_sided'])} (table {b['table']}).")
+        if d := t.get("delta_local_core_vs_interaction"):
+            lines.append(f"- Δ local pLDDT of pathogenic variants, core (median {_f(d['median_core'], 2)}, "
+                         f"n = {d['n_core']}) vs interaction sites (median {_f(d['median_interaction'], 2)}, "
+                         f"n = {d['n_interaction']}): one-sided Mann–Whitney p = {_p(d['p_one_sided'])}.")
+        if k := t.get("kruskal_delta_local_pathogenic"):
+            lines.append(f"- Δ local pLDDT of pathogenic variants across {k['n_groups']} mechanism classes: "
+                         f"Kruskal–Wallis H = {k['h']:.2f}, p = {_p(k['p'])}.")
     lines += ["", "## Correlations (Spearman, all folded variants)", "", "| x | y | n | ρ | p |", "|---|---|---:|---:|---:|"]
     for c in r["correlations"]:
         lines.append(f"| {c['x']} | {c['y']} | {c['n']} | {_f(c['spearman_rho'])} | {_p(c['p'])} |")

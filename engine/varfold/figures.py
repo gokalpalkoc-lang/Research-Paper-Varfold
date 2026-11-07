@@ -116,6 +116,43 @@ def delta_by_class(metrics: pd.DataFrame, null_floor: float, out_dir: Path, seed
     return _save(fig, out_dir, "fig2_delta_plddt_by_class")
 
 
+MECHANISM_ORDER = ("core", "ligand", "coactivator", "dimer", "surface")
+
+
+def delta_by_mechanism(metrics: pd.DataFrame, null_floor: float, out_dir: Path, seed: int) -> list[str]:
+    """Δ local pLDDT of pathogenic (orange) and tolerated (blue) variants per site mechanism."""
+    m = metrics[metrics["label"].isin(["pathogenic", "benign", "population"])]
+    classes = [c for c in MECHANISM_ORDER if (m["mechanism"] == c).any()]
+    if not classes:
+        return []
+    rng = np.random.default_rng(seed)
+    fig, ax = plt.subplots(figsize=(5.6, 3.2))
+    for k, cls in enumerate(classes):
+        for offset, labels, color in ((-0.17, ("pathogenic",), CLASS_COLORS["pathogenic"]),
+                                      (0.17, ("benign", "population"), CLASS_COLORS["benign"])):
+            vals = m.loc[(m["mechanism"] == cls) & m["label"].isin(labels), "delta_local_plddt"].to_numpy()
+            if not len(vals):
+                continue
+            if len(vals) >= 5:
+                ax.boxplot(vals, positions=[k + offset], widths=0.28, showfliers=False,
+                           medianprops={"color": INK, "lw": 1.4}, boxprops={"color": INK2, "lw": 0.8},
+                           whiskerprops={"color": INK2, "lw": 0.8}, capprops={"color": INK2, "lw": 0.8})
+            ax.scatter(k + offset + rng.uniform(-0.09, 0.09, len(vals)), vals, s=10, color=color,
+                       edgecolors=SURFACE, linewidths=0.6, zorder=3, alpha=0.9)
+    ax.axhline(0, color=AXIS, lw=0.8, zorder=1)
+    ax.axhline(null_floor, color=INK2, lw=0.8, zorder=1)
+    ax.set_xticks(range(len(classes)), [
+        f"{c}\nP {int(((m['mechanism'] == c) & (m['label'] == 'pathogenic')).sum())} · "
+        f"T {int(((m['mechanism'] == c) & (m['label'] != 'pathogenic')).sum())}" for c in classes], fontsize=7)
+    ax.scatter([], [], s=10, color=CLASS_COLORS["pathogenic"], label="Pathogenic / LP")
+    ax.scatter([], [], s=10, color=CLASS_COLORS["benign"], label="Tolerated (benign + gnomAD carriers)")
+    ax.legend(loc="lower left", fontsize=6.5)
+    ax.set_ylabel("Δ local pLDDT (mutant − WT)")
+    ax.set_title("Local confidence change by what the mutated site does")
+    ax.grid(axis="x", visible=False)
+    return _save(fig, out_dir, "fig7_delta_by_mechanism")
+
+
 def roc_figure(curves: list[dict], out_dir: Path) -> list[str]:
     """``curves``: dicts with key, label, scores (oriented), positives, auc, ci.
 
