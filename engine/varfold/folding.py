@@ -59,7 +59,12 @@ def load_pretrained(cls, name: str):
     8 GB safetensors conversion from an unmerged ``refs/pr/*`` branch — wasteful,
     and not the reviewed artifact a paper should cite. So be explicit: safetensors
     when main has them (e.g. ESM-2), otherwise the .bin (loaded with ``weights_only``).
+
+    Loading a .bin still makes transformers start a non-daemon "auto_conversion" thread
+    that asks the Hub for such a conversion; it kept finished runs from ever exiting
+    (and holding the GPU) until killed. Its documented off switch is set here.
     """
+    os.environ.setdefault("DISABLE_SAFETENSORS_CONVERSION", "1")
     return cls.from_pretrained(name, use_safetensors=_publishes_safetensors(name))
 
 
@@ -107,13 +112,37 @@ def _set_bfactors(pdb: str, values) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _language_model_on_cpu(torch, lm, trunk_device):
+    """Wrap ESMFold's ESM-2 so it runs on the CPU and hands its hidden states to the trunk.
+
+    ESMFold calls its language model once per prediction, as
+    ``self.esm(ids, attention_mask=..., output_hidden_states=True)["hidden_states"]``, and
+    takes every other device from the input ids, so moving tensors at this one call is enough.
+    """
+
+    class LanguageModelOnCPU(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lm = lm.to("cpu")
+
+        def forward(self, input_ids, attention_mask=None, output_hidden_states=False):
+            out = self.lm(input_ids.cpu(), attention_mask=None if attention_mask is None else attention_mask.cpu(),
+                          output_hidden_states=output_hidden_states)
+            return {"hidden_states": tuple(h.to(trunk_device) for h in out["hidden_states"])}
+
+    return LanguageModelOnCPU()
+
+
 class ESMFoldPredictor:
     """Loads ESMFold once and folds single sequences.
 
     On CUDA with ``precision: fp16`` the 3B-parameter ESM-2 language model runs in
-    half precision (required to fit 8 GB cards) while the folding trunk stays fp32
-    (TF32 matmuls). On CPU everything runs in fp32. The effective precision is part
-    of :attr:`fingerprint`, so predictions made under different numerics are never mixed.
+    half precision while the folding trunk stays fp32 (TF32 matmuls); that needs ~8.4 GB
+    of GPU memory. ``precision: cpu-lm`` keeps the language model on the CPU in fp32 and
+    runs only the trunk (the expensive, recycled part) on the GPU: ~3 GB, so it fits
+    laptop cards that expose 7.5 GB. On CPU everything runs in fp32. The effective
+    precision is part of :attr:`fingerprint`, so predictions made under different
+    numerics are never mixed.
     """
 
     def __init__(self, options: FoldingOptions, device: str | None = None):
@@ -124,7 +153,8 @@ class ESMFoldPredictor:
         self.device = resolve_device(device or options.device)
         if self.device.type == "cuda":
             # TF32 matmuls are enabled on CUDA, so CUDA "fp32" differs numerically from CPU fp32.
-            self.precision = "fp16-lm/tf32" if options.precision == "fp16" else "fp32/tf32"
+            self.precision = {"fp16": "fp16-lm/tf32", "fp32": "fp32/tf32",
+                              "cpu-lm": "fp32-cpu-lm/tf32"}[options.precision]
         else:
             self.precision = "fp32"
         self.chunk_size = options.chunk_size
@@ -135,10 +165,17 @@ class ESMFoldPredictor:
         model.eval()
         if self.precision.startswith("fp16-lm"):
             model.esm = model.esm.half()
-        self.model = model.to(self.device)
+        if self.precision.startswith("fp32-cpu-lm"):
+            lm = model.esm
+            model.esm = None  # keeps its slot, so the language model stays out of .to(device)
+            model = model.to(self.device)
+            model.esm = _language_model_on_cpu(torch, lm, self.device)
+            self.model = model
+        else:
+            self.model = model.to(self.device)
         if self.device.type == "cuda":
             torch.backends.cuda.matmul.allow_tf32 = True
-        else:
+        if self.device.type == "cpu" or self.precision.startswith("fp32-cpu-lm"):
             configure_cpu_threads()
         self._set_chunk(self.chunk_size)
         log.info("ESMFold loaded on %s (%s) in %.0fs", self.device_name, self.precision, time.perf_counter() - t0)

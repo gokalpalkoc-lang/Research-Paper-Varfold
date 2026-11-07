@@ -89,8 +89,10 @@ sudo reboot                         # with Secure Boot on, enrol the MOK key whe
 .venv/bin/python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name())"
 ```
 
-ESMFold's language model runs in fp16 on the GPU (config `folding.precision`), which fits
-~250-residue constructs in 8 GB of VRAM.
+`precision: cpu-lm` (the AR config's setting) keeps ESMFold's 3B language model on
+the CPU in fp32 and runs the folding trunk on the GPU, which needs ~3 GB of VRAM.
+`precision: fp16` puts the language model on the GPU in half precision instead
+(faster, ~8.4 GB, too much for 8 GB laptop cards that expose 7.5 GB).
 
 ### Python + Node
 
@@ -138,10 +140,12 @@ journalctl --user -fu varfold-batch          # or: tail -f data/ar_lbd/varfold.l
   for testing; production runs need the GPU.
 - **CPU threads:** this hybrid CPU is fastest with `VARFOLD_THREADS=6` (one per P-core).
   Using all 22 logical CPUs is about 2× slower than PyTorch's default.
-- **GPU (estimate, not yet measured):** single-digit to tens of seconds per structure on
-  the RTX 5070 Laptop. That makes the clinical set a sub-hour to few-hour job, and the
-  `saturation` scan (~4,800 structures) a genuine overnight run. Check with
-  `varfold status` after the first few structures.
+- **Measured on GPU** (RTX 5070 Laptop, `precision: cpu-lm`): **~12 s** per structure,
+  so about 1.5 h for the 442-structure set; the `saturation` scan (~4,800 structures)
+  is an overnight run. The card exposes 7.5 GB, which is too little for `fp16`
+  (~8.4 GB), so the 3B language model runs on the CPU in fp32 and only the folding
+  trunk on the GPU (~2.8 GB). Against the CPU fp32 folds, mean pLDDT agrees to 0.01
+  and Δ local pLDDT to 0.02 (WT, R780W, L881V).
 
 **Reproducibility guarantees**
 

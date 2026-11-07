@@ -53,9 +53,12 @@ folding:
   num_recycles: 4
   # Trunk chunking trades speed for memory; 64 fits ~250 aa in 8 GB VRAM.
   chunk_size: 64
-  # fp16 runs the ESM-2 language model in half precision (needed for 8 GB GPUs);
+  # cpu-lm keeps the 3B ESM-2 language model on the CPU in fp32 and runs only the
+  # folding trunk on the GPU (~3 GB): this laptop's RTX 5070 exposes 7.5 GB, and
+  # fp16 (language model in half precision on the GPU, ~8.4 GB) does not fit it.
+  # fp16 runs the ESM-2 language model in half precision on GPUs with more memory;
   # the folding trunk always stays fp32.
-  precision: fp16
+  precision: cpu-lm
   device: auto      # auto | cuda | cpu
   save_pae: true
 

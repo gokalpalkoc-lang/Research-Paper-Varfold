@@ -16,7 +16,8 @@ TRP_CAGE = "NLYIQWLKDGGPSSGRPPPS"
 def predictor():
     from varfold.folding import ESMFoldPredictor
 
-    return ESMFoldPredictor(FoldingOptions(num_recycles=1, chunk_size=None), device="auto")
+    # cpu-lm fits any CUDA card with ~3 GB free and is plain fp32 on CPU-only machines.
+    return ESMFoldPredictor(FoldingOptions(num_recycles=1, chunk_size=None, precision="cpu-lm"), device="auto")
 
 
 def test_prediction_is_on_0_100_scale_and_consistent_with_pdb(predictor):

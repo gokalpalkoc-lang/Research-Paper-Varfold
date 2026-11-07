@@ -112,8 +112,8 @@ class TargetConfig:
             raise ValueError(f"population.count must be one of {CARRIER_COUNTS}")
         if self.population.min_carriers < 1:
             raise ValueError("population.min_carriers must be at least 1")
-        if self.folding.precision not in ("fp16", "fp32"):
-            raise ValueError("folding.precision must be fp16 or fp32")
+        if self.folding.precision not in ("fp16", "fp32", "cpu-lm"):
+            raise ValueError("folding.precision must be fp16, fp32 or cpu-lm")
         if self.llr.context not in ("full", "construct"):
             raise ValueError("llr.context must be full or construct")
 
