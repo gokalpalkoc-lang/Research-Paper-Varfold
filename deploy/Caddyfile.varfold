@@ -1,8 +1,12 @@
-{$DOMAIN} {
+# The VarFold demo's site block, appended to the shared Caddyfile at
+# /opt/scout/deploy/Caddyfile by scripts/setup-server.sh (Caddy belongs to scout).
+# It does not import scout's `common_headers`: the app ships its own strict CSP,
+# and two header sets for the same names would be ambiguous.
+varfold.devtga.com {
 	encode zstd gzip
 
 	header {
-		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Permissions-Policy "camera=(), microphone=(), geolocation=()"
@@ -24,10 +28,12 @@
 		max_size 64KB
 	}
 
-	reverse_proxy app:8000 {
-		# Live folds can take a while on a busy GPU.
-		transport http {
-			read_timeout 6m
+	reverse_proxy varfold-app:8000
+
+	log {
+		output file /data/varfold-access.log {
+			roll_size 10mb
+			roll_keep 3
 		}
 	}
 }

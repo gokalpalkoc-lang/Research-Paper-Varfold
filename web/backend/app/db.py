@@ -21,7 +21,7 @@ DETAIL_COLUMNS = SUMMARY_COLUMNS + [
 ]
 SORTABLE = {"position", "variant_id", "label", "mean_plddt", "delta_mean_plddt", "delta_site_plddt",
             "delta_local_plddt", "rmsd_ca", "lddt_local", "llr", "local_q"}
-LABELS = {"wild_type", "pathogenic", "benign", "vus", "conflicting", "unlabeled"}
+LABELS = {"wild_type", "pathogenic", "benign", "vus", "conflicting", "cancer", "population", "unlabeled"}
 
 
 class Dataset:

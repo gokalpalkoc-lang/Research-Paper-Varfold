@@ -6,10 +6,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from synthetic import make_pdb, random_chain
-from varfold import folding
-from varfold.folding import Prediction, read_predictions, structure_file
-from varfold.metrics import compute_metrics
+# run_batch records the torch/transformers versions with every prediction, even with the stub.
+pytest.importorskip("torch")
+
+from synthetic import make_pdb, random_chain  # noqa: E402
+from varfold import folding  # noqa: E402
+from varfold.folding import Prediction, read_predictions, structure_file  # noqa: E402
+from varfold.metrics import compute_metrics  # noqa: E402
 
 
 def stub_predictor(precision: str, shift: float):

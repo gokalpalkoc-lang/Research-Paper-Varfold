@@ -41,6 +41,13 @@ export function Overview({ meta }: { meta: Meta }) {
           {nVariants.toLocaleString()} clinically classified missense variants, each folded with ESMFold and compared
           with the wild type. Where does the model lose confidence, and does that track pathogenicity?
         </p>
+        {s.dataset.n_missing > 0 && (
+          <p className="callout warn" role="status">
+            <b>Preliminary.</b> Only {nVariants.toLocaleString()} of{" "}
+            {(nVariants + s.dataset.n_missing).toLocaleString()} variants have been folded so far, so every statistic
+            on this site will change. Please don't cite these numbers.
+          </p>
+        )}
       </section>
 
       <section className="grid-tiles" aria-label="Headline numbers">

@@ -1,37 +1,40 @@
-# Hetzner deployment: app (API + static frontend) behind Caddy (automatic HTTPS).
-#   cp .env.example .env && edit
-#   mkdir -p data && copy varfold.sqlite into ./data (see publish.sh)
-#   docker compose up -d --build
+# The VarFold demo on the shared Hetzner server (see README › Deploying to devtga.com).
+#
+# Run from /home/YZ/varfold (scripts/deploy.sh does this):
+#   docker compose -p varfold -f app/deploy/docker-compose.yml --env-file .env up -d --build
+#
+# The server's Caddy belongs to the "scout" project and owns ports 80/443, so this
+# file has no Caddy of its own: the app joins scout's network as "varfold-app" and
+# deploy/Caddyfile.varfold is appended to scout's Caddyfile. The service is not
+# called "app" because Operon's already is, and service names are DNS names on
+# that shared network.
+#
+# The server only reads a precomputed SQLite bundle: no PyTorch, no model, no
+# folding. The limits below make sure it can never starve the other sites.
+
 services:
-  app:
+  varfold:
     build: ../web
     restart: unless-stopped
-    env_file: .env
+    env_file: ../../.env
     environment:
       VARFOLD_DB: /data/varfold.sqlite
     volumes:
-      - ./data:/data:ro
-    expose:
-      - "8000"
-    # The live worker lives on the tailnet (100.x.y.z). Containers reach it through
-    # the host's tailscale0 route; if your setup can't, use `network_mode: host`.
+      # scripts/publish.sh swaps the bundle in this folder, then restarts the app.
+      - ../../data:/data:ro
+    mem_limit: 384m
+    cpus: 0.5
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    networks:
+      edge:
+        aliases: [varfold-app]
 
-  caddy:
-    image: caddy:2
-    restart: unless-stopped
-    depends_on:
-      - app
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    environment:
-      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-
-volumes:
-  caddy_data:
-  caddy_config:
+networks:
+  edge:
+    external: true
+    name: deploy_default

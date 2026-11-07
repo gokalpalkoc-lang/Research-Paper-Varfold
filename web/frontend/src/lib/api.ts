@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-export type Label = "wild_type" | "pathogenic" | "benign" | "vus" | "conflicting" | "unlabeled";
+export type Label = "wild_type" | "pathogenic" | "benign" | "vus" | "conflicting" | "cancer" | "population" | "unlabeled";
 
 export interface VariantSummary {
   variant_id: string;

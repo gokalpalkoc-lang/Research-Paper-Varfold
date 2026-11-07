@@ -5,7 +5,7 @@ import { num } from "../lib/format";
 import { BreakingBadge, ClassBadge, ErrorNote, Loading } from "../components/ui";
 
 const PAGE = 50;
-const CLASSES: Label[] = ["pathogenic", "benign", "vus", "conflicting", "unlabeled"];
+const CLASSES: Label[] = ["pathogenic", "benign", "vus", "conflicting", "cancer", "population", "unlabeled"];
 const COLUMNS: { key: keyof VariantSummary; label: string; digits?: number; signed?: boolean; title: string }[] = [
   { key: "delta_local_plddt", label: "Δ local pLDDT", digits: 2, signed: true, title: "Mean pLDDT change within ±5 residues of the site" },
   { key: "delta_mean_plddt", label: "Δ mean pLDDT", digits: 2, signed: true, title: "Whole-domain mean pLDDT change" },
