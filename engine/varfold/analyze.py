@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats as sps
 
-from . import figures
+from . import figures, robustness
 from .config import TargetConfig
 from .curate import load_meta
 from .mechanism import CLASSES as MECHANISMS, INTERACTION_CLASSES, annotate
@@ -267,6 +267,9 @@ def run_analysis(cfg: TargetConfig) -> dict:
     figs += figures.saturation_heatmap(metrics, start, end, paths.figures)
     if mech is not None:
         figs += figures.delta_by_mechanism(metrics, null_floor, paths.figures, A.seed)
+    rob = robustness.run(metrics, start, end, n_boot=A.bootstrap, n_perm=A.permutations, seed=A.seed)
+    if rob is not None:
+        figs += figures.robustness_figure(rob, paths.figures)
 
     result = _clean({
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -302,6 +305,7 @@ def run_analysis(cfg: TargetConfig) -> dict:
         "versus_alphamissense_tolerated": vs_am_tol,
         "correlations": correlations(metrics),
         "mechanism": by_mechanism,
+        "robustness": rob,
         "figures": figs,
     })
     (paths.analysis / "stats.json").write_text(json.dumps(result, indent=2, allow_nan=False))
@@ -322,6 +326,65 @@ def _p(v):
     if v is None:
         return "—"
     return f"{v:.1e}" if v < 1e-3 else f"{v:.3f}"
+
+
+def render_robustness(rob: dict) -> list[str]:
+    """Markdown for the edge-trim and burial checks (see ``robustness.py``)."""
+    names = {"delta_local_plddt": "Δ local pLDDT", "delta_mean_plddt": "Δ mean pLDDT", "rmsd_ca": "Cα RMSD",
+             "rsasa": "burial", "alphamissense": "AlphaMissense"}
+    lines = ["", "## Robustness checks", "",
+             "Chosen after a first look at the data, so exploratory for this target. "
+             f"Burial is the {rob['burial_definition']}.", ""]
+    for key, title in (("edge_trim_benign", "Pathogenic vs benign"), ("edge_trim_tolerated", "Pathogenic vs tolerated")):
+        rows = rob.get(key)
+        if not rows:
+            continue
+        cols = [k for k in names if any(r["auc"].get(k) for r in rows)]
+        lines += [f"### Edge effect: {title}, dropping residues from each end of the construct", "",
+                  "| Trim | n (P/neg) | " + " | ".join(f"AUC {names[k]}" for k in cols) + " | breaking-point rate P vs neg | Fisher p |",
+                  "|---|---|" + "---|" * len(cols) + "---|---:|"]
+        for r in rows:
+            cells = []
+            for k in cols:
+                v = r["auc"].get(k)
+                cells.append("—" if not v else f"{v['auc']:.2f} [{v['ci95'][0]:.2f}–{v['ci95'][1]:.2f}]")
+            en = r["breaking_point_enrichment"]
+            rate = "—" if en is None else f"{r['pathogenic_breaking_rate']:.0%} vs {r['negative_breaking_rate']:.0%}"
+            lines.append(f"| {r['trim']} | {r['n_pathogenic']}/{r['n_negative']} | " + " | ".join(cells)
+                         + f" | {rate} | {'—' if en is None else _p(en['p_one_sided'])} |")
+        lines.append("")
+    es = rob["edge_share"]
+    lines.append(f"Breaking points in the outer {es['width']} residues of each end: {es['breaking_points_in_edges']} of "
+                 f"{es['breaking_points']}, from {es['variants_in_edges']} of {es['variants']} variants.")
+    for label in ("pathogenic", "benign", "population"):
+        v = es["by_label"].get(label)
+        if v and v["edge_breaking_rate"] is not None and v["middle_breaking_rate"] is not None:
+            lines.append(f"- {label}: breaking-point rate {v['edge_breaking_rate']:.0%} at the ends (n = {v['n_edge']}) "
+                         f"vs {v['middle_breaking_rate']:.0%} in the middle (n = {v['n_middle']}).")
+    if fs := rob.get("feature_sets"):
+        lines += ["", f"### Burial head-to-head (pathogenic {fs['n_pathogenic']} vs {'+'.join(fs['negatives'])} "
+                      f"{fs['n_negative']}, complete cases)", "",
+                  f"Cross-validated AUC ({fs['folds']}-fold, {fs['repeats']} repeats, regularised logistic model; ± sd over repeats).",
+                  "", "| Feature set | CV AUC |", "|---|---|"]
+        for s in sorted(fs["sets"], key=lambda s: -s["cv_auc"]):
+            lines.append(f"| {s['name']} | {s['cv_auc']:.3f} ± {s['cv_auc_sd']:.3f} |")
+        if fs["gains"]:
+            lines += ["", "Paired AUC gains on pooled out-of-fold predictions (DeLong 95% CI; permutation p):", "",
+                      "| Added | to | ΔAUC [95% CI] | p (permutation) |", "|---|---|---|---:|"]
+            for g in fs["gains"]:
+                if g["difference"] is None:
+                    continue
+                lines.append(f"| {g['new']} | {g['base']} | {g['difference']:+.3f} "
+                             f"[{g['ci95'][0]:+.3f}, {g['ci95'][1]:+.3f}] | {_p(g['p'])} |")
+        st = fs["strata"]
+        lines += ["", f"Within burial strata (split at median rSASA = {st['rsasa_cut']:.2f}); AUC by group:", "",
+                  "| Group | P | neg | " + " | ".join(names[k] for k in ("delta_local_plddt", "delta_mean_plddt", "rmsd_ca", "alphamissense")) + " |",
+                  "|---|---:|---:|---:|---:|---:|---:|"]
+        for g in st["groups"]:
+            vals = [g["auc"].get(k) for k in ("delta_local_plddt", "delta_mean_plddt", "rmsd_ca", "alphamissense")]
+            lines.append(f"| {g['name']} | {g['n_pathogenic']} | {g['n_negative']} | "
+                         + " | ".join("—" if v is None else f"{v:.2f}" for v in vals) + " |")
+    return lines
 
 
 def render_report(r: dict) -> str:
@@ -451,6 +514,8 @@ def render_report(r: dict) -> str:
         if k := t.get("kruskal_delta_local_pathogenic"):
             lines.append(f"- Δ local pLDDT of pathogenic variants across {k['n_groups']} mechanism classes: "
                          f"Kruskal–Wallis H = {k['h']:.2f}, p = {_p(k['p'])}.")
+    if rob := r.get("robustness"):
+        lines += render_robustness(rob)
     lines += ["", "## Correlations (Spearman, all folded variants)", "", "| x | y | n | ρ | p |", "|---|---|---:|---:|---:|"]
     for c in r["correlations"]:
         lines.append(f"| {c['x']} | {c['y']} | {c['n']} | {_f(c['spearman_rho'])} | {_p(c['p'])} |")

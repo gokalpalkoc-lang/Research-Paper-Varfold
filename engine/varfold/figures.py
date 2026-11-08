@@ -153,6 +153,55 @@ def delta_by_mechanism(metrics: pd.DataFrame, null_floor: float, out_dir: Path, 
     return _save(fig, out_dir, "fig7_delta_by_mechanism")
 
 
+def robustness_figure(rob: dict, out_dir: Path) -> list[str]:
+    """(a) AUC as variants near both ends of the construct are dropped; (b) cross-validated AUC per feature set."""
+    rows = rob.get("edge_trim_tolerated") or rob.get("edge_trim_benign") or []
+    fs = rob.get("feature_sets")
+    if not rows or not fs:
+        return []
+    neg_name = "tolerated" if rob.get("edge_trim_tolerated") else "benign"
+    lines = [("delta_mean_plddt", "Δ mean pLDDT", SERIES[0]), ("delta_local_plddt", "Δ local pLDDT", SERIES[2]),
+             ("rsasa", "Burial (no folding)", SERIES[1]), ("alphamissense", "AlphaMissense", INK2)]
+    fig, (a, b) = plt.subplots(1, 2, figsize=(9.2, 3.4), gridspec_kw={"width_ratios": [1, 1.25], "wspace": 0.55})
+    trims = [r["trim"] for r in rows]
+    ends = []
+    for key, name, color in lines:
+        pts = [(r["trim"], r["auc"][key]["auc"]) for r in rows if r["auc"].get(key)]
+        if not pts:
+            continue
+        a.plot(*zip(*pts), marker="o", ms=4, color=color)
+        ends.append([pts[-1][0], pts[-1][1], name, color])
+    # Direct labels at the line ends, pushed apart where curves finish close together.
+    ends.sort(key=lambda e: e[1])
+    gap = 0.022
+    label_y = [e[1] for e in ends]
+    for i in range(1, len(ends)):
+        label_y[i] = max(label_y[i], label_y[i - 1] + gap)
+    for (x, y, name, color), ly in zip(ends, label_y):
+        a.annotate(name, (x, y), xytext=(x + 1.5, ly), color=color, fontsize=7, va="center",
+                   arrowprops={"arrowstyle": "-", "color": color, "lw": 0.6, "shrinkA": 0, "shrinkB": 2})
+    a.set_xlim(-1, max(trims) * 1.9 if max(trims) else 1)
+    a.set_xticks(trims)
+    a.set_xlabel("Residues dropped from each end of the construct")
+    a.set_ylabel(f"AUC, pathogenic vs {neg_name}")
+    a.set_ylim(0.5, 0.9)
+    a.set_title("(a) Signal after trimming the ends")
+    sets = sorted(fs["sets"], key=lambda s: s["cv_auc"])
+    ypos = np.arange(len(sets))
+    colors = [SERIES[1] if s["name"].startswith("burial") else INK2 if "AlphaMissense" in s["name"] else SERIES[0]
+              for s in sets]
+    b.barh(ypos, [s["cv_auc"] - 0.5 for s in sets], left=0.5, color=colors, height=0.62,
+           xerr=[s["cv_auc_sd"] for s in sets], error_kw={"ecolor": INK2, "lw": 0.8, "capsize": 2})
+    for y, s in zip(ypos, sets):
+        b.text(s["cv_auc"] + 0.008, y, f"{s['cv_auc']:.2f}", va="center", fontsize=7, color=INK2)
+    b.set_yticks(ypos, [s["name"] for s in sets], fontsize=7)
+    b.set_xlim(0.5, 0.95)
+    b.set_xlabel("Cross-validated AUC")
+    b.set_title(f"(b) What each score adds (P {fs['n_pathogenic']} · {neg_name} {fs['n_negative']})")
+    b.grid(axis="y", visible=False)
+    return _save(fig, out_dir, "fig8_robustness")
+
+
 def roc_figure(curves: list[dict], out_dir: Path) -> list[str]:
     """``curves``: dicts with key, label, scores (oriented), positives, auc, ci.
 
